@@ -3,4 +3,5 @@ pandas
 requests
 tenacity
 logging
-dotenv
+python-dotenv
+openai
