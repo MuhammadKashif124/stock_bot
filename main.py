@@ -7,9 +7,64 @@ import sys
 import yfinance as yf
 import pandas as pd
 import smtplib
+import re
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+from openai import OpenAI
+import os
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
+
+# Get API key from environment variable
+openai_api_key = os.environ.get("OPENAI_API_KEY")
+client = OpenAI(api_key=openai_api_key)
+
+
+def generate_alert_openai(stock_list):
+    prompt = """
+    You are an expert formatting assistant that generates professional email content for stock drop alerts.
+
+    You will be given a list of stocks that have either dropped more than 50% intraday or are currently down more than 50% from the previous close.
+
+    Each stock alert includes the following fields:
+    - company_name
+    - ticker
+    - previous_close
+    - current_price
+    - drop_from_low (percentage from yesterday's close to today's lowest price)
+    - price_status (percentage from yesterday's close to current price)
+    - alert_time (timestamp)
+
+    Format a plain text summary for **each stock alert** in a clear, readable structure like this:
+
+    Stock Drop Alert: {company_name} ({ticker})
+    Date: {alert_time}
+    Ticker: {ticker}
+
+    Previous Day's Close: ${previous_close:.2f}
+    Current Price:        ${current_price:.2f}
+    Intraday Low Drop:    {drop_from_low:.2f}% (from yesterday's close to today's lowest price)
+    Current Stock Status: {price_status:+.2f}% (from yesterday's close to current price)
+
+    Only return the formatted stock alert strings for each stock. Do not add explanation or extra text.
+    """
+    completion = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[
+            {
+                "role": "system",
+                "content": prompt
+            },
+            {"role": "user", "content": f"Here are the stocks: {json.dumps(stock_list)}"}
+
+        ]
+    )
+
+    output = completion.choices[0].message.content
+    return output
 
 # Configure console for proper encoding (especially for Windows)
 def configure_console_encoding():
@@ -103,20 +158,28 @@ def send_email_via_smtp(subject, html_body, plain_body, to_email, from_email, sm
         logger.error(f"[ERROR] Unexpected error when sending email: {e}")
         raise  # Don't retry unexpected errors
 
-def send_stock_drop_email(result, email_lines, toemail):
+def htmlify_stock_block(text):
+    def colorize(line):
+        line = re.sub(r"(-\d+\.\d+%)", r"<span class='drop'>\1</span>", line)
+        line = re.sub(r"(\+\d+\.\d+%)", r"<span class='rise'>\1</span>", line)
+        return line
+
+    return "<pre>" + "\n".join(colorize(line) for line in text.splitlines()) + "</pre>"
+
+def send_stock_drop_email(result, stock_list, toemail):
     """
     Composes and sends a styled email for stock drop alerts.
     
     :param result: List of tickers that triggered the alert
-    :param email_lines: List of text blocks describing each stock alert
+    :param stock_list: List of text blocks describing each stock alert
     :return: Boolean indicating if email was sent successfully
     """
-    if not email_lines:
+    if not stock_list:
         logger.info("No alerts to send in email.")
         return True
 
     # Build plain text email (optional for fallback or logging)
-    plain_body = ("\n\n" + "-" * 60 + "\n\n").join(email_lines)
+    plain_body = ("\n\n" + "-" * 60 + "\n\n").join(stock_list)
     plain_body += "\n\nThis alert was generated based on your configured drop threshold."
 
     # Subject
@@ -148,17 +211,18 @@ def send_stock_drop_email(result, email_lines, toemail):
     """
 
     html_blocks = []
-    for line in email_lines:
+    for stock in stock_list:
         # naive conversion from plain text to HTML blocks
-        html_line = line.replace("\n", "<br>").replace("  ", "&nbsp;&nbsp;")
+        # html_line = line.replace("\n", "<br>").replace("  ", "&nbsp;&nbsp;")
+        html_line = htmlify_stock_block(stock)
         html_blocks.append(f"<div class='stock-block'>{html_line}</div>")
 
     html_body = html_template_start + "\n".join(html_blocks) + html_template_end
 
-    from_email = "dummy@example.com"
+    from_email = "loudhome12@gmail.com"
     to_email = toemail
-    smtp_user = "dummy@example.com"
-    smtp_password = "123456789"  # Not your Gmail password, CREATE an App Password in your Google Account settings https://myaccount.google.com/apppasswords
+    smtp_user = "loudhome12@gmail.com"
+    smtp_password = "qgmv rstg tewl zpjk"  # Not your Gmail password, CREATE an App Password in your Google Account settings https://myaccount.google.com/apppasswords
 
     try:
         success = send_email_via_smtp(
@@ -289,12 +353,12 @@ def check_loss_tickers(stock_data, threshold=1):
     :param threshold: Drop percent to filter, default 1
     :return: Tuple of (list of ticker symbols, list of email message lines)
     """
-    email_lines = []
+    stock_list = []
     result = []
     
     if not stock_data:
         logger.warning("No stock data provided to check_loss_tickers!")
-        return result, email_lines
+        return result, stock_list
 
     processed_count = 0
     invalid_count = 0
@@ -315,17 +379,18 @@ def check_loss_tickers(stock_data, threshold=1):
             price_status = ((price - close) / close) * 100  # Signed: positive = gain, negative = loss
 
             if drop_from_low >= threshold or price_status <= -threshold:
-                line = (
-                    f"Stock Drop Alert: {stock_name} ({ticker_symbol})\n"
-                    f"Date: {time.strftime('%Y-%m-%d %H:%M:%S')}\n"
-                    f"Ticker: {ticker_symbol}\n\n"
-                    f"Previous Day's Close: ${close:.2f}\n"
-                    f"Current Price:        ${price:.2f}\n"
-                    f"Intraday Low Drop:    {drop_from_low:.2f}% (from yesterday's close to today's lowest price)\n"
-                    f"Current Stock Status: {price_status:+.2f}% (from yesterday's close to current price)"
-                )
 
-                email_lines.append(line)
+                alert = {
+                    "stock_name": stock_name,
+                    "ticker_symbol": ticker_symbol,
+                    "alert_time": time.strftime('%Y-%m-%d %H:%M:%S'),
+                    "previous_close": close,
+                    "current_price": price,
+                    "drop_from_low": drop_from_low,
+                    "price_status": price_status,
+                }
+
+                stock_list.append(alert)
                 result.append(ticker_symbol)
             
             processed_count += 1
@@ -335,7 +400,7 @@ def check_loss_tickers(stock_data, threshold=1):
             invalid_count += 1
 
     logger.info(f"Processed {processed_count} stocks, found {len(result)} alerts, skipped {invalid_count} invalid entries")
-    return result, email_lines
+    return result, stock_list
 
 
 def load_from_file(file_path):
@@ -436,12 +501,14 @@ def main(threshold=50):
             return False
             
         # Process the data and prepare alerts
-        result, email_lines = check_loss_tickers(all_stocks_data, threshold=threshold)
+        result, stocks_list = check_loss_tickers(all_stocks_data, threshold=threshold)
         
         # Only send email if we have alerts
         if result:
             logger.info(f"Found {len(result)} stocks with significant drops, sending email alert.")
-            email_success = send_stock_drop_email(result, email_lines, "kashiftariq7654@gmail.com") #mushafmughal12@gmail.com
+            email_lines = generate_alert_openai(stocks_list)
+            email_lines = re.split(r'\n(?=Stock Drop Alert:)', email_lines.strip())
+            email_success = send_stock_drop_email(result, email_lines, "mushafmughal99@gmail.com") #kashiftariq7654
 
             if not email_success:
                 logger.error("Failed to send email alert after multiple attempts.")
@@ -466,12 +533,27 @@ def main(threshold=50):
 
 if __name__ == "__main__":
     try:
-        success = main(threshold=50)
-        exit_code = 0 if success else 1
-        exit(exit_code)  # Return proper exit code for scheduler
+        # Main scheduling loop
+        while True:
+            logger.info("Starting scheduled stock alert check...")
+            start_time = time.time()
+            
+            success = main(threshold=50)
+            if not success:
+                logger.warning("Stock alert check completed with errors")
+            else:
+                logger.info("Stock alert check completed successfully")
+            
+            # Calculate time to sleep (24 hours from start of current run)
+            execution_time = time.time() - start_time
+            sleep_time = max(0, 24*60*60 - execution_time)  # 24 hours in seconds
+            
+            logger.info(f"Next check scheduled in {sleep_time/3600:.2f} hours")
+            time.sleep(sleep_time)
+            
     except KeyboardInterrupt:
         logger.info("Process interrupted by user")
         exit(130)  # Standard exit code for Ctrl+C
     except Exception as e:
-        logger.critical(f"Fatal error: {e}", exc_info=True)
+        logger.critical(f"Fatal error in scheduling loop: {e}", exc_info=True)
         exit(1)  # Non-zero exit code indicates failure
