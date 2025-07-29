@@ -456,10 +456,11 @@ def main(threshold=50):
     :param threshold: The threshold percentage for stock drops
     :return: True if execution completed successfully, False otherwise
     """
-    # Create a lock file to prevent multiple instances from running
+    # Check if we should use locking (default is True, but can be disabled via env var)
+    use_locking = os.environ.get("USE_LOCK_FILE", "True").lower() in ["true", "1", "yes"]
     lock_file = "stock_alerts.lock"
     
-    if os.path.exists(lock_file):
+    if use_locking and os.path.exists(lock_file):
         # Check if the lock file is stale (older than 2 hours)
         lock_age = time.time() - os.path.getctime(lock_file)
         if lock_age < 7200:  # 2 hours in seconds
@@ -473,13 +474,14 @@ def main(threshold=50):
                 logger.error(f"Could not remove stale lock file: {e}")
                 return False
     
-    # Create the lock file
-    try:
-        with open(lock_file, 'w') as f:
-            f.write(f"Process started at {time.strftime('%Y-%m-%d %H:%M:%S')}")
-    except Exception as e:
-        logger.error(f"Could not create lock file: {e}")
-        # Continue anyway since this is not critical
+    # Create the lock file if locking is enabled
+    if use_locking:
+        try:
+            with open(lock_file, 'w') as f:
+                f.write(f"Process started at {time.strftime('%Y-%m-%d %H:%M:%S')}")
+        except Exception as e:
+            logger.error(f"Could not create lock file: {e}")
+            # Continue anyway since this is not critical
     
     try:
         logger.info("Starting stock alerts job")
@@ -524,12 +526,13 @@ def main(threshold=50):
         return False
     finally:
         # Always remove the lock file at the end, regardless of success or failure
-        try:
-            if os.path.exists(lock_file):
-                os.remove(lock_file)
-        except Exception as e:
-            logger.error(f"Failed to remove lock file: {e}")
-            # Continue anyway as the process is ending
+        if use_locking:
+            try:
+                if os.path.exists(lock_file):
+                    os.remove(lock_file)
+            except Exception as e:
+                logger.error(f"Failed to remove lock file: {e}")
+                # Continue anyway as the process is ending
 
 if __name__ == "__main__":
     try:
