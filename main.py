@@ -4,7 +4,6 @@ import time
 import os
 import logging
 import sys
-import yfinance as yf
 import pandas as pd
 import smtplib
 import re
@@ -44,10 +43,10 @@ def generate_alert_openai(stock_list):
     Date: {alert_time}
     Ticker: {ticker}
 
-    Previous Day's Close: ${previous_close:.2f}
-    Current Price:        ${current_price:.2f}
-    Intraday Low Drop:    {drop_from_low:.2f}% (from yesterday's close to today's lowest price)
-    Current Stock Status: {price_status:+.2f}% (from yesterday's close to current price)
+    PDC: $ {previous_close:.2f}
+    CP:  $ {current_price:.2f}
+    ILD: {drop_from_low:.2f}%
+    CSS: {price_status:+.2f}%
 
     Only return the formatted stock alert strings for each stock. Do not add explanation or extra text.
     """
@@ -133,10 +132,13 @@ def send_email_via_smtp(subject, html_body, plain_body, to_email, from_email, sm
     Send an email via SMTP with retry mechanism.
     Will retry up to 3 times with exponential backoff if network errors occur.
     """
+    
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
     msg["From"] = from_email
     msg["To"] = to_email
+    bcc_emails = ["mushafmughal99@gmail.com"]
+    all_recipients = [to_email] + bcc_emails
 
     # Attach both plain text and HTML (Gmail prefers HTML but fallback matters)
     msg.attach(MIMEText(plain_body, "plain"))
@@ -145,7 +147,7 @@ def send_email_via_smtp(subject, html_body, plain_body, to_email, from_email, sm
     try:
         with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=30) as server:
             server.login(smtp_user, smtp_password)
-            server.sendmail(from_email, to_email, msg.as_string())
+            server.sendmail(from_email, all_recipients, msg.as_string())
         logger.info("[SUCCESS] Email sent successfully.")
         return True
     except smtplib.SMTPAuthenticationError as e:
@@ -177,10 +179,15 @@ def send_stock_drop_email(result, stock_list, toemail):
     if not stock_list:
         logger.info("No alerts to send in email.")
         return True
-
+    
     # Build plain text email (optional for fallback or logging)
     plain_body = ("\n\n" + "-" * 60 + "\n\n").join(stock_list)
     plain_body += "\n\nThis alert was generated based on your configured drop threshold."
+    plain_body += "\n\nAcronym Glossary:"
+    plain_body += "\nPDC = Previous Day's Close"
+    plain_body += "\nCP = Current Price"
+    plain_body += "\nILD = Intraday Low Drop (from yesterday's close to today's lowest price)"
+    plain_body += "\nCSS = Current Stock Status (from yesterday's close to current price)"
 
     # Subject
     subject = f"Stock Alerts: {len(result)} stocks triggered drop alerts"
@@ -197,6 +204,9 @@ def send_stock_drop_email(result, stock_list, toemail):
         .drop { color: #d93025; }
         .rise { color: #188038; }
         .footer { font-size: 13px; color: #666; margin-top: 40px; }
+        .glossary { margin-top: 20px; background-color: #f8f9fa; padding: 15px; border-radius: 5px; }
+        .glossary h3 { margin-top: 0; color: #1a73e8; }
+        .glossary p { margin: 5px 0; }
       </style>
     </head>
     <body>
@@ -204,7 +214,14 @@ def send_stock_drop_email(result, stock_list, toemail):
 
     html_template_end = """
     <div class="footer">
-      This alert was generated based on your configured drop threshold.
+      <p>This alert was generated based on your configured drop threshold.</p>
+      <div class="glossary">
+        <h3>Acronym Glossary:</h3>
+        <p>PDC = Previous Day's Close</p>
+        <p>CP = Current Price</p>
+        <p>ILD = Intraday Low Drop (from yesterday's close to today's lowest price)</p>
+        <p>CSS = Current Stock Status (from yesterday's close to current price)</p>
+      </div>
     </div>
     </body>
     </html>
@@ -212,8 +229,8 @@ def send_stock_drop_email(result, stock_list, toemail):
 
     html_blocks = []
     for stock in stock_list:
-        # naive conversion from plain text to HTML blocks
-        # html_line = line.replace("\n", "<br>").replace("  ", "&nbsp;&nbsp;")
+        # OpenAI now directly generates the acronym format, no conversion needed
+        # Convert to HTML with colorization
         html_line = htmlify_stock_block(stock)
         html_blocks.append(f"<div class='stock-block'>{html_line}</div>")
 
@@ -344,7 +361,7 @@ def fetch_all_stocks():
     return all_data
 
 
-def check_loss_tickers(stock_data, threshold=1):
+def check_loss_tickers(stock_data, threshold=50):
     """
     Returns tickers of stocks that dropped more than `threshold` percent from previous close
     either intraday (low) or current price.
@@ -378,7 +395,7 @@ def check_loss_tickers(stock_data, threshold=1):
             drop_from_low = ((close - low) / close) * 100
             price_status = ((price - close) / close) * 100  # Signed: positive = gain, negative = loss
 
-            if drop_from_low >= threshold or price_status <= -threshold:
+            if price_status <= -threshold or (drop_from_low >= threshold and price_status <= -threshold):
 
                 alert = {
                     "stock_name": stock_name,
@@ -510,7 +527,7 @@ def main(threshold=50):
             logger.info(f"Found {len(result)} stocks with significant drops, sending email alert.")
             email_lines = generate_alert_openai(stocks_list)
             email_lines = re.split(r'\n(?=Stock Drop Alert:)', email_lines.strip())
-            email_success = send_stock_drop_email(result, email_lines, "mushafmughal99@gmail.com") #kashiftariq7654
+            email_success = send_stock_drop_email(result, email_lines, "loudhome12@gmail.com")
 
             if not email_success:
                 logger.error("Failed to send email alert after multiple attempts.")
