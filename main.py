@@ -624,7 +624,7 @@ if __name__ == "__main__":
             logger.info("Starting scheduled stock alert check...")
             start_time = time.time()
             
-            success = main(threshold=50)
+            success = main(threshold=100)
             if not success:
                 logger.warning("Stock alert check completed with errors")
             else:
