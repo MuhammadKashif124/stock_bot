@@ -168,6 +168,64 @@ def htmlify_stock_block(text):
 
     return "<pre>" + "\n".join(colorize(line) for line in text.splitlines()) + "</pre>"
 
+def send_no_alert_email(toemail):
+    """
+    Sends an email when no stock alerts were triggered.
+    
+    :param toemail: Email address to send the alert to
+    :return: Boolean indicating if email was sent successfully
+    """
+    logger.info("Sending 'No alert today' email.")
+    
+    # Subject
+    subject = "Stock Alerts: No alerts today"
+    
+    # Plain text body
+    plain_body = "No stocks triggered drop alerts today based on your configured threshold."
+    plain_body += "\n\nYour stock monitoring system is running normally."
+    
+    # HTML Email Body
+    html_body = """
+    <html>
+    <head>
+      <style>
+        body { font-family: Arial, sans-serif; color: #333; padding: 20px; }
+        .message { margin: 30px 0; font-size: 16px; line-height: 1.6; }
+        .footer { font-size: 13px; color: #666; margin-top: 40px; }
+      </style>
+    </head>
+    <body>
+      <div class="message">
+        <p>No stocks triggered drop alerts today based on your configured threshold.</p>
+        <p>Your stock monitoring system is running normally.</p>
+      </div>
+      <div class="footer">
+        <p>This is an automated message from your stock monitoring system.</p>
+      </div>
+    </body>
+    </html>
+    """
+    
+    from_email = "loudhome12@gmail.com"
+    to_email = toemail
+    smtp_user = "loudhome12@gmail.com"
+    smtp_password = "qgmv rstg tewl zpjk"  # App Password
+    
+    try:
+        success = send_email_via_smtp(
+            subject=subject,
+            html_body=html_body,
+            plain_body=plain_body,
+            to_email=to_email,
+            from_email=from_email,
+            smtp_user=smtp_user,
+            smtp_password=smtp_password,
+        )
+        return success
+    except Exception as e:
+        logger.error(f"'No alert' email sending failed: {e}")
+        return False
+
 def send_stock_drop_email(result, stock_list, toemail):
     """
     Composes and sends a styled email for stock drop alerts.
@@ -503,6 +561,9 @@ def main(threshold=50):
     try:
         logger.info("Starting stock alerts job")
         
+        # Set recipient email address
+        recipient_email = "loudhome12@gmail.com"
+        
         # Try to fetch fresh data
         all_stocks_data = fetch_all_stocks()
         
@@ -522,18 +583,23 @@ def main(threshold=50):
         # Process the data and prepare alerts
         result, stocks_list = check_loss_tickers(all_stocks_data, threshold=threshold)
         
-        # Only send email if we have alerts
+        # Send appropriate email based on results
         if result:
             logger.info(f"Found {len(result)} stocks with significant drops, sending email alert.")
             email_lines = generate_alert_openai(stocks_list)
             email_lines = re.split(r'\n(?=Stock Drop Alert:)', email_lines.strip())
-            email_success = send_stock_drop_email(result, email_lines, "loudhome12@gmail.com")
+            email_success = send_stock_drop_email(result, email_lines, recipient_email)
 
             if not email_success:
                 logger.error("Failed to send email alert after multiple attempts.")
                 return False
         else:
-            logger.info(f"No stocks found with drops exceeding {threshold}% threshold.")
+            logger.info(f"No stocks found with drops exceeding {threshold}% threshold. Sending 'no alert' email.")
+            email_success = send_no_alert_email(recipient_email)
+            
+            if not email_success:
+                logger.error("Failed to send 'no alert' email after multiple attempts.")
+                return False
             
         logger.info("Stock alerts job completed successfully")
         return True
@@ -558,7 +624,7 @@ if __name__ == "__main__":
             logger.info("Starting scheduled stock alert check...")
             start_time = time.time()
             
-            success = main(threshold=50)
+            success = main(threshold=100)
             if not success:
                 logger.warning("Stock alert check completed with errors")
             else:
